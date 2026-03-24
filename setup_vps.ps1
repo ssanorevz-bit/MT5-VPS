@@ -31,7 +31,12 @@ $pythonCheck = Get-Command python -ErrorAction SilentlyContinue
 if ($pythonCheck) {
     Write-Host "      Python มีอยู่แล้ว: $($pythonCheck.Source)" -ForegroundColor Green
 } else {
-    winget install Python.Python.3.11 -e --accept-source-agreements --accept-package-agreements --silent
+    $pythonInstaller = "$env:TEMP\python311.exe"
+    Write-Host "      กำลังดาวน์โหลด Python 3.11 ..." -ForegroundColor Gray
+    Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" -OutFile $pythonInstaller -UseBasicParsing
+    Write-Host "      กำลังติดตั้ง ..." -ForegroundColor Gray
+    Start-Process -FilePath $pythonInstaller -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1" -Wait
+    Remove-Item $pythonInstaller -Force
     # refresh PATH
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
     Write-Host "      Python ติดตั้งสำเร็จ" -ForegroundColor Green
