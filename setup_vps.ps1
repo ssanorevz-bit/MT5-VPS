@@ -26,11 +26,12 @@ if ($pythonCheck) {
     Write-Host "[2/7] Python OK" -ForegroundColor Green
 }
 
-# [3] pip packages + download collector script
-Write-Host "[3/7] ติดตั้ง packages + ดาวน์โหลด script ..." -ForegroundColor Yellow
+# [3] pip packages + download scripts
+Write-Host "[3/7] ติดตั้ง packages + ดาวน์โหลด scripts ..." -ForegroundColor Yellow
 python -m pip install MetaTrader5 pandas pyarrow -q
-curl -o "C:\quant\collect_mt5_tick_dom.py" "https://raw.githubusercontent.com/ssanorevz-bit/MT5-VPS/main/collect_mt5_tick_dom.py"
-Write-Host "[3/7] packages + script OK" -ForegroundColor Green
+curl -o "C:\quant-s\collect_mt5_tick_dom.py" "https://raw.githubusercontent.com/ssanorevz-bit/MT5-VPS/main/collect_mt5_tick_dom.py"
+curl -o "C:\quant-s\DOM_Collector.mq5" "https://raw.githubusercontent.com/ssanorevz-bit/MT5-VPS/main/DOM_Collector.mq5"
+Write-Host "[3/7] packages + scripts OK" -ForegroundColor Green
 
 # [4] ดาวน์โหลด MT5 Pi Securities
 Write-Host "[4/7] ดาวน์โหลด MT5 Pi Securities ..." -ForegroundColor Yellow
@@ -70,9 +71,9 @@ Write-Host "[6/7] upload_gdrive.ps1 OK" -ForegroundColor Green
 # [7] ตั้ง Task Scheduler
 Write-Host "[7/7] ตั้ง Task Scheduler ..." -ForegroundColor Yellow
 
-# MT5Collector — รันตอน boot
+# MT5Collector — รันตอน boot (รันจาก C:\quant-s\)
 schtasks /delete /tn MT5Collector /f 2>$null
-schtasks /create /tn MT5Collector /tr "python C:\quant\collect_mt5_tick_dom.py" /sc onstart /ru SYSTEM /rl HIGHEST /f | Out-Null
+schtasks /create /tn MT5Collector /tr "python C:\quant-s\collect_mt5_tick_dom.py" /sc onstart /ru SYSTEM /rl HIGHEST /f | Out-Null
 schtasks /run /tn MT5Collector | Out-Null
 Write-Host "  MT5Collector task OK (background)" -ForegroundColor Green
 
@@ -87,10 +88,12 @@ Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "  Setup เสร็จ!" -ForegroundColor Green
 Write-Host ""
 Write-Host "  NEXT STEPS:" -ForegroundColor Yellow
-Write-Host "  1. ติดตั้ง MT5 : C:\quant\pisecurities5setup.exe" -ForegroundColor White
-Write-Host "  2. Config rclone (1 ครั้ง): rclone config" -ForegroundColor White
-Write-Host "     -> n -> gdrive -> drive (Google Drive) -> ทำตาม URL" -ForegroundColor White
-Write-Host "  3. ทดสอบ sync  : powershell C:\quant\upload_gdrive.ps1" -ForegroundColor White
+Write-Host "  1. ติดตั้ง MT5       : C:\quant\pisecurities5setup.exe" -ForegroundColor White
+Write-Host "  2. MT5 Login + OTP" -ForegroundColor White
+Write-Host "  3. Compile EA      : MetaEditor -> เปิด C:\quant-s\DOM_Collector.mq5 -> F7" -ForegroundColor White
+Write-Host "     Attach EA       : ลาก DOM_Collector จาก Navigator -> chart S50IF" -ForegroundColor Gray
+Write-Host "  4. Config rclone (1 ครั้ง): rclone config" -ForegroundColor White
+Write-Host "     -> n -> gdrive -> drive -> ทำตาม URL" -ForegroundColor White
 Write-Host ""
 Write-Host "  เช็ค collector : Get-ScheduledTask MT5Collector | Select State" -ForegroundColor White
 Write-Host "  ดู log         : Get-Content C:\quant-s\collector.log -Tail 20 -Wait" -ForegroundColor White
