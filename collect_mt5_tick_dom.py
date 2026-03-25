@@ -20,7 +20,8 @@ import time
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, Future
+import threading
 
 import pandas as pd
 
@@ -35,10 +36,22 @@ DOM_INTERVAL_HIGH    = 0.1   # HIGH-vol stocks (DELTA, KBANK...): 100ms
 DOM_INTERVAL_MED     = 0.5   # MEDIUM-vol stocks: 500ms
 DOM_INTERVAL_LOW     = 1.0   # LOW-vol stocks: 1s
 TICK_FLUSH_MIN       = 1     # flush Parquet ทุก 1 นาที (ลด memory usage)
+PRIORITY_FUTURES     = ["S50IF_CON"]  # poll ก่อน options ทุก loop
 MAX_BUFFER_ROWS      = 5000  # emergency flush ถ้า buffer ใหญ่เกิน
 SYMBOL_REFRESH_MIN   = 30    # re-discover options/stocks ทุก 30 นาที
 OUT_DIR              = Path("C:/quant-s/data")   # absolute path — safe for Task Scheduler
 LOG_FILE             = Path("C:/quant-s/collector.log")
+
+# Windows reserved device names — ห้ามใช้เป็นชื่อโฟลเดอร์/ไฟล์
+WINDOWS_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+}
+
+def is_safe_sym(sym: str) -> bool:
+    """Return False ถ้า symbol ชนกับ Windows reserved name"""
+    return sym.upper() not in WINDOWS_RESERVED
 LOG_LEVEL            = logging.INFO
 
 # ── Tick activity tiers (จาก 01_Raw_Ticks file size analysis) ──────
@@ -95,6 +108,34 @@ STOCK_SYMBOLS = [
     "UNIQ",   "VGI",    "VNG",    "WHA",    "WHAUP",
 ]
 
+# SET200 Extension — DOM only, LOW tier (1s)
+# หุ้น mid-cap ที่น่าสนใจสำหรับ sector rotation และ correlation analysis
+SET200_EXTENSION = [
+    # Property & Construction
+    "CHEWA",  "NOBLE",  "LPN",    "RICHY",  "MJD",    "NC",
+    "PRIN",   "TVD",    "LALIN",
+    # Finance & Insurance
+    "TIDLOR", "BKI",    "CIMBT",  "LHFG",   "NER",
+    # Healthcare
+    "KLINIQ", "CHG",    "BCH",    "PRINC",  "VIBHA",
+    # Food & Agriculture
+    "TFG",    "ASIAN",  "NFC",    "BR",     "GFPT",
+    # Energy & Utilities
+    "HYDRO",  "TPCH",   "ESSO",   "SUSCO",
+    # Retail & Service
+    "MAKRO",  "BEAUTY", "LASER",  "TNP",
+    # Tech & Media
+    "HUMAN",  "CI",     "INSET",  "SCI",
+    # REITs (monitor institutional flow)
+    "CPNREIT","JASIF",  "DIF",    "WHART",  "LHPF",
+    # MAI — liquid stocks (sector signals + correlation)
+    "JMART",  "SINGER", "SISB",   "PRIME",  "MASTER",
+    "FORTH",  "ITEL",   "NUSA",   "CHO",    "UA",    "TNL",
+]
+# รวม list เดียว
+STOCK_SYMBOLS = STOCK_SYMBOLS + [s for s in SET200_EXTENSION if s not in STOCK_SYMBOLS]
+
+
 # ── Logging ────────────────────────────────────────────────────────
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
@@ -128,11 +169,14 @@ def init_mt5(max_wait_min: int = 30):
 
 
 def discover_futures_options() -> list:
-    """Auto-discover S50IF + S50 Options (ทุก Call/Put ทุก strike)"""
+    """Auto-discover S50IF + S50 Options (ทุก Call/Put ทุก strike, กรอง reserved names)"""
     symbols = ["S50IF_CON"]
     all_syms = mt5.symbols_get(group="*S50*") or []
     for s in all_syms:
         name = s.name
+        if not is_safe_sym(name):
+            log.warning(f"skip {name} — Windows reserved name")
+            continue
         if (name.startswith("S50")
                 and len(name) >= 8
                 and any(m in name[3:6] for m in "HJKMNQUVXZ")
@@ -144,9 +188,12 @@ def discover_futures_options() -> list:
 
 
 def discover_stock_symbols() -> list:
-    """ตรวจสอบว่า SET50 stocks ตัวไหนมีใน MT5"""
+    """ตรวจสอบว่า SET50 stocks ตัวไหนมีใน MT5 (กรอง Windows reserved names)"""
     available = []
     for s in STOCK_SYMBOLS:
+        if not is_safe_sym(s):
+            log.warning(f"skip {s} — Windows reserved name")
+            continue
         info = mt5.symbol_info(s)
         if info is not None:
             available.append(s)
@@ -205,16 +252,26 @@ def _dom_hash(sym: str):
 def _poll_stock_dom(args: tuple):
     """Poll DOM หุ้น 1 ตัว (รัน parallel ใน ThreadPool).
     Returns (sym, DataFrame | None)
+    เพิ่ม hash check → บันทึกเฉพาะเมื่อ DOM เปลี่ยนจริง (ประหยัด storage + ลด noise)
     """
-    sym, snap_now, last_ts = args
+    sym, snap_now, last_ts, prev_hash = args
     if (snap_now - last_ts).total_seconds() < get_dom_interval(sym):
-        return sym, None
+        return sym, None, prev_hash   # ยังไม่ถึง interval → ข้าม
+    h = _dom_hash(sym)
+    if h is None or h == prev_hash:
+        return sym, None, prev_hash   # DOM ไม่เปลี่ยน → ไม่บันทึก
     df = snapshot_dom(sym)
-    return sym, df if not df.empty else None
+    return sym, (df if not df.empty else None), h
 
 
 # ── Save ───────────────────────────────────────────────────────────
 def save_parquet(df: pd.DataFrame, path: Path):
+    # ตรวจ Windows reserved name ใน path components
+    for part in path.parts:
+        name = part.rstrip(".").upper().split(".")[0]
+        if name in WINDOWS_RESERVED:
+            log.warning(f"skip save — reserved name in path: {path}")
+            return
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         df = pd.concat([pd.read_parquet(path), df], ignore_index=True)
@@ -255,6 +312,21 @@ def is_stock_active() -> bool:
     return (945 <= hhmm <= 1230) or (1345 <= hhmm <= 1630)
 
 
+# ── Background flush ───────────────────────────────────────────────
+_flush_lock = threading.Lock()
+_flush_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="flush")
+
+
+def _flush_worker(buffers_snapshot: dict, out_dir: Path, date_str: str, kind: str):
+    """รัน flush Parquet ใน background thread — ไม่บล็อก main loop"""
+    for sym, df in buffers_snapshot.items():
+        try:
+            save_parquet(df, out_dir / kind / sym / f"{date_str}.parquet")
+            log.info(f"  {kind.upper():4s} {sym}: +{len(df)} rows")
+        except Exception as e:
+            log.warning(f"  {kind.upper():4s} {sym}: flush error — {e}")
+
+
 # ── Main ───────────────────────────────────────────────────────────
 def main():
     init_mt5()
@@ -263,6 +335,11 @@ def main():
     fo_syms    = discover_futures_options()   # Tick + DOM
     stock_syms = discover_stock_symbols()     # DOM only
     all_syms   = fo_syms + stock_syms
+
+    # ── Priority: S50IF_CON poll ก่อน options ทุก loop ────────────
+    # แยก priority symbols ออกจาก options เพื่อให้ loop ไม่ต้อง iterate 200+ อันก่อน
+    prio_syms   = [s for s in fo_syms if s in PRIORITY_FUTURES]   # S50IF_CON
+    other_fo    = [s for s in fo_syms if s not in PRIORITY_FUTURES]  # options
 
     # ── แบ่ง stock เป็น 2 กลุ่มตาม capture strategy ──────────────
     # HIGH: event-driven (hash) เหมือน S50IF — ไม่พลาดแม้แต่ event เดียว
@@ -281,6 +358,8 @@ def main():
     last_dom_snap_stocks_ts: dict = {}                # MED/LOW stocks: timestamp ของ snap ล่าสุด
     last_stock_sweep     = datetime.min               # เวลา ThreadPool sweep ล่าสุด
     stock_executor       = ThreadPoolExecutor(max_workers=8)
+    _pending_flush: list[Future] = []                 # track background flush futures
+    _loop_times: list[float] = []                     # loop latency monitoring
 
     log.info("Collector started. Ctrl+C to stop.")
     log.info(
@@ -326,18 +405,37 @@ def main():
                     fo_syms.extend(added)
                 last_sym_refresh = now
 
-            # ── Tick: Futures + Options (only when FO session open)
+            _t0 = time.monotonic()
+
+            # ── [PRIORITY] S50IF_CON: Tick + DOM ก่อนเลย ────────────
+            # poll priority symbols ทันที ก่อน iterate options 200+ ตัว
             if is_fo_open():
-                for sym in fo_syms:
+                for sym in prio_syms:
+                    # Tick
+                    df = collect_ticks(sym, last_tick_ts[sym])
+                    if not df.empty:
+                        tick_buffers[sym].append(df)
+                        last_tick_ts[sym] = df["time_msc"].max().to_pydatetime()
+                    # DOM — event-driven hash
+                    h = _dom_hash(sym)
+                    if h is not None and h != prev_dom_hash.get(sym):
+                        df = snapshot_dom(sym)
+                        if not df.empty:
+                            dom_buffers[sym].append(df)
+                        prev_dom_hash[sym] = h
+
+            # ── Tick: Options — เก็บ live (event-driven, ไม่ download ย้อนหลังได้)
+            if is_fo_open():
+                for sym in other_fo:
                     df = collect_ticks(sym, last_tick_ts[sym])
                     if not df.empty:
                         tick_buffers[sym].append(df)
                         last_tick_ts[sym] = df["time_msc"].max().to_pydatetime()
 
-            # ── DOM: Futures+Options — event-driven (10ms loop)
+            # ── DOM: Options — event-driven (10ms loop)
             # snap ทันทีที่ hash ของ book เปลี่ยน → ไม่พลาดแม้แต่ event เดียว
             if is_fo_open():
-                for sym in fo_syms:
+                for sym in other_fo:
                     h = _dom_hash(sym)
                     if h is not None and h != prev_dom_hash.get(sym):
                         df = snapshot_dom(sym)
@@ -361,13 +459,17 @@ def main():
             if is_stock_active() and (now - last_stock_sweep).total_seconds() >= 0.05:
                 snap_now = datetime.utcnow()
                 args_list = [
-                    (sym, snap_now, last_dom_snap_stocks_ts.get(sym, datetime.min))
+                    (sym, snap_now,
+                     last_dom_snap_stocks_ts.get(sym, datetime.min),
+                     prev_dom_hash.get(sym))          # ← ส่ง hash ก่อนหน้าด้วย
                     for sym in time_stock_syms
                 ]
-                for sym, df in stock_executor.map(_poll_stock_dom, args_list):
+                for sym, df, new_hash in stock_executor.map(_poll_stock_dom, args_list):
                     if df is not None:
                         dom_buffers[sym].append(df)
                         last_dom_snap_stocks_ts[sym] = snap_now
+                    if new_hash is not None:
+                        prev_dom_hash[sym] = new_hash  # ← อัปเดต hash ล่าสุด
                 last_stock_sweep = now
 
             # ── Emergency flush ถ้า buffer ใหญ่เกินไป ──────────
@@ -380,29 +482,59 @@ def main():
                     except MemoryError:
                         tick_buffers[sym] = []  # drop และเดินหน้าต่อ
 
-            # ── Flush to Parquet ทุก TICK_FLUSH_MIN ─────────────
+            # ── Loop latency monitoring ─────────────────────────
+            _loop_ms = (time.monotonic() - _t0) * 1000
+            _loop_times.append(_loop_ms)
+            if len(_loop_times) >= 1000:  # log ทุก ~10 วินาที
+                avg_ms = sum(_loop_times) / len(_loop_times)
+                max_ms = max(_loop_times)
+                if avg_ms > 50:  # warn ถ้า loop ช้าเกิน 50ms
+                    log.warning(f"Loop slow: avg={avg_ms:.1f}ms max={max_ms:.1f}ms (target=10ms)")
+                else:
+                    log.debug(f"Loop: avg={avg_ms:.1f}ms max={max_ms:.1f}ms")
+                _loop_times.clear()
+
+            # ── Flush to Parquet ทุก TICK_FLUSH_MIN — background thread ──
+            # ย้ายไป background เพื่อไม่บล็อก main loop
             if (now - last_flush).total_seconds() >= TICK_FLUSH_MIN * 60:
-                # Tick: futures + options
+                # รอ flush เก่าเสร็จก่อน (ถ้ายังรัน)
+                for f in _pending_flush:
+                    try:
+                        f.result(timeout=5)
+                    except Exception as e:
+                        log.warning(f"Flush error: {e}")
+                _pending_flush.clear()
+
+                # สร้าง snapshot ของ buffer แล้วเคลียร์ buffer ทันที
+                # → main loop ไม่ต้องรอ disk write
+                tick_snap: dict[str, pd.DataFrame] = {}
+                dom_snap:  dict[str, pd.DataFrame] = {}
+
                 for sym in fo_syms:
                     if tick_buffers[sym]:
                         try:
-                            df = pd.concat(tick_buffers[sym], ignore_index=True)
-                            save_parquet(df, OUT_DIR / "ticks" / sym / f"{date_str}.parquet")
-                            log.info(f"  Tick {sym}: +{len(df)} rows")
+                            tick_snap[sym] = pd.concat(tick_buffers[sym], ignore_index=True)
                         except MemoryError:
                             log.warning(f"  Tick {sym}: MemoryError — buffer dropped")
                         tick_buffers[sym] = []
 
-                # DOM: ทุก symbol
                 for sym in fo_syms + stock_syms:
                     if dom_buffers[sym]:
                         try:
-                            df = pd.concat(dom_buffers[sym], ignore_index=True)
-                            save_parquet(df, OUT_DIR / "dom" / sym / f"{date_str}.parquet")
-                            log.info(f"  DOM  {sym}: +{len(df)} rows")
+                            dom_snap[sym] = pd.concat(dom_buffers[sym], ignore_index=True)
                         except MemoryError:
-                            log.warning(f"  DOM  {sym}: MemoryError — buffer dropped")
+                            log.warning(f"  DOM {sym}: MemoryError — buffer dropped")
                         dom_buffers[sym] = []
+
+                # submit flush ไป background
+                if tick_snap:
+                    _pending_flush.append(
+                        _flush_executor.submit(_flush_worker, tick_snap, OUT_DIR, date_str, "ticks")
+                    )
+                if dom_snap:
+                    _pending_flush.append(
+                        _flush_executor.submit(_flush_worker, dom_snap, OUT_DIR, date_str, "dom")
+                    )
 
                 last_flush = now
 
@@ -412,6 +544,13 @@ def main():
         log.info("Stopping...")
     finally:
         stock_executor.shutdown(wait=False)
+        # รอ background flush เสร็จก่อน shutdown
+        for f in _pending_flush:
+            try:
+                f.result(timeout=10)
+            except Exception as e:
+                log.warning(f"Final flush error: {e}")
+        # Final flush — synchronous ตอน shutdown
         for sym in fo_syms:
             if tick_buffers.get(sym):
                 df = pd.concat(tick_buffers[sym], ignore_index=True)
@@ -420,6 +559,7 @@ def main():
             if dom_buffers.get(sym):
                 df = pd.concat(dom_buffers[sym], ignore_index=True)
                 save_parquet(df, OUT_DIR / "dom" / sym / f"{today_str()}.parquet")
+        _flush_executor.shutdown(wait=True)
         unsubscribe_dom(fo_syms + stock_syms)
         mt5.shutdown()
         log.info("Done.")
