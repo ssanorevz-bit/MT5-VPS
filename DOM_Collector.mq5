@@ -92,7 +92,10 @@ void OnBookEvent(const string &symbol)
 
    // ดึง Order Book (MQL5 → ได้สูงสุด 20 levels จาก TFEX)
    MqlBookInfo book[];
-   int count = MarketBookGet(symbol, book);
+   if(!MarketBookGet(symbol, book))
+      return;
+
+   int count = ArraySize(book);
    if(count <= 0)
       return;
 
