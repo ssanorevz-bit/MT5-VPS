@@ -29,7 +29,7 @@ if ($pythonCheck) {
 # [3] pip packages + download collector script
 Write-Host "[3/7] ติดตั้ง packages + ดาวน์โหลด script ..." -ForegroundColor Yellow
 python -m pip install MetaTrader5 pandas pyarrow -q
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ssanorevz-bit/MT5-VPS/main/collect_mt5_tick_dom.py" -OutFile "C:\quant\collect_mt5_tick_dom.py" -UseBasicParsing
+curl -o "C:\quant\collect_mt5_tick_dom.py" "https://raw.githubusercontent.com/ssanorevz-bit/MT5-VPS/main/collect_mt5_tick_dom.py"
 Write-Host "[3/7] packages + script OK" -ForegroundColor Green
 
 # [4] ดาวน์โหลด MT5 Pi Securities
