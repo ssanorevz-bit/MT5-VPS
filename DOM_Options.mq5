@@ -95,9 +95,9 @@ void OnTimer()
    if(now - g_last_resync >= RESYNC_SEC)
      { g_init_sec = now; g_init_mcs = GetMicrosecondCount(); g_last_resync = now; }
 
-   // re-discover options ทุก 30 นาที (1800 วินาที / tick 100ms = ~18000 ticks)
+   // re-discover options ทุก 5 นาที (300 วินาที / tick 100ms = ~3000 ticks)
    static int s_tick = 0;
-   if(++s_tick >= 18000) { DiscoverAndSubscribe(); s_tick = 0; }
+   if(++s_tick >= 3000)  { DiscoverAndSubscribe(); s_tick = 0; }
   }
 
 //+------------------------------------------------------------------+
