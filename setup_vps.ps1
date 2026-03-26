@@ -1,76 +1,99 @@
 # =============================================================
-# setup_vps.ps1 — VPS Auto Setup (ไม่รวม MT5)
+# setup_vps.ps1 — VPS Auto Setup
 # =============================================================
 # วิธีใช้ (PowerShell Administrator):
-#   irm https://raw.githubusercontent.com/ssanorevz-bit/MT5-VPS/main/setup_vps.ps1 | iex
+#   irm https://raw.githubusercontent.com/ssanorevz-bit/astfex/main/setup_vps.ps1 | iex
 # =============================================================
+
+$REPO = "https://raw.githubusercontent.com/ssanorevz-bit/astfex/main"
+$DIR  = "C:\quant-s"
 
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "  VPS Setup — Quant Collector"              -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 
-# [0] ตั้ง Timezone Bangkok + Sync เวลา
-Write-Host "[0/5] ตั้ง Timezone + Sync เวลา ..." -ForegroundColor Yellow
+# [0] Timezone + Sync
+Write-Host "[0/5] ตั้ง Timezone Bangkok + Sync เวลา ..." -ForegroundColor Yellow
 Set-TimeZone -Id "SE Asia Standard Time"
 w32tm /resync /force | Out-Null
-Write-Host "[0/5] Timezone: $((Get-TimeZone).DisplayName)" -ForegroundColor Green
-Write-Host "[0/5] เวลาปัจจุบัน: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Green
+Write-Host "      Timezone: $((Get-TimeZone).DisplayName)" -ForegroundColor Green
+Write-Host "      เวลา: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Green
 
-# [1] สร้าง folder
-New-Item -ItemType Directory -Force -Path C:\quant     | Out-Null
-New-Item -ItemType Directory -Force -Path C:\quant-s\data | Out-Null
-Write-Host "[1/5] folders OK" -ForegroundColor Green
+# [1] สร้าง folders
+Write-Host "[1/5] สร้าง folders ..." -ForegroundColor Yellow
+New-Item -ItemType Directory -Force -Path "$DIR\data" | Out-Null
+Write-Host "      $DIR\data OK" -ForegroundColor Green
 
 # [2] ติดตั้ง Python 3.11
-Write-Host "[2/5] ดาวน์โหลด + ติดตั้ง Python 3.11 ..." -ForegroundColor Yellow
+Write-Host "[2/5] ตรวจสอบ Python ..." -ForegroundColor Yellow
 $pythonCheck = Get-Command python -ErrorAction SilentlyContinue
 if ($pythonCheck) {
-    Write-Host "[2/5] Python มีอยู่แล้ว: $($pythonCheck.Source)" -ForegroundColor Green
+    Write-Host "      Python มีอยู่แล้ว: $($pythonCheck.Source)" -ForegroundColor Green
 } else {
-    Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" -OutFile "$env:TEMP\py.exe" -UseBasicParsing
+    Write-Host "      ดาวน์โหลด Python 3.11 ..." -ForegroundColor Yellow
+    Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" `
+        -OutFile "$env:TEMP\py.exe" -UseBasicParsing
     Start-Process "$env:TEMP\py.exe" -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1" -Wait
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-    Write-Host "[2/5] Python OK" -ForegroundColor Green
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
+                [System.Environment]::GetEnvironmentVariable("Path","User")
+    Write-Host "      Python 3.11 OK" -ForegroundColor Green
 }
 
-# [3] pip packages + download scripts
+# [3] pip packages + download collector
 Write-Host "[3/5] ติดตั้ง packages + ดาวน์โหลด scripts ..." -ForegroundColor Yellow
 python -m pip install MetaTrader5 pandas pyarrow -q
-curl -o "C:\quant-s\collect_mt5_tick_dom.py" "https://raw.githubusercontent.com/ssanorevz-bit/MT5-VPS/main/collect_mt5_tick_dom.py"
-curl -o "C:\quant-s\DOM_Collector.mq5" "https://raw.githubusercontent.com/ssanorevz-bit/MT5-VPS/main/DOM_Collector.mq5"
+
+# Download Python collector
+curl -s -o "$DIR\collect_mt5_tick_dom.py" "$REPO/collect_mt5_tick_dom.py"
+Write-Host "      collect_mt5_tick_dom.py OK" -ForegroundColor Green
+
+# Download run_collector.bat
+curl -s -o "$DIR\run_collector.bat" "$REPO/run_collector.bat"
+Write-Host "      run_collector.bat OK" -ForegroundColor Green
+
+# Download EA ทุกตัว (DOM x6 + Tick x2)
+$EAs = @(
+    "DOM_S50IF.mq5",
+    "DOM_Delta.mq5",
+    "DOM_High.mq5",
+    "DOM_Options.mq5",
+    "DOM_Stocks_A.mq5",
+    "DOM_Stocks_B.mq5",
+    "Tick_TFEX.mq5",
+    "Tick_Stocks.mq5"
+)
+foreach ($ea in $EAs) {
+    curl -s -o "$DIR\$ea" "$REPO/$ea"
+    Write-Host "      $ea OK" -ForegroundColor Green
+}
 Write-Host "[3/5] packages + scripts OK" -ForegroundColor Green
 
 # [4] ดาวน์โหลด MT5 Pi Securities
 Write-Host "[4/5] ดาวน์โหลด MT5 Pi Securities ..." -ForegroundColor Yellow
-Invoke-WebRequest -Uri "https://download.mql5.com/cdn/web/21687/mt5/pisecurities5setup.exe" -OutFile "C:\quant\pisecurities5setup.exe" -UseBasicParsing
-Write-Host "[4/5] MT5 installer OK -> C:\quant\pisecurities5setup.exe" -ForegroundColor Green
+Invoke-WebRequest -Uri "https://download.mql5.com/cdn/web/21687/mt5/pisecurities5setup.exe" `
+    -OutFile "$DIR\pisecurities5setup.exe" -UseBasicParsing
+Write-Host "      MT5 installer -> $DIR\pisecurities5setup.exe" -ForegroundColor Green
 
-# [5] สร้าง run_collector.bat
-Write-Host "[5/5] สร้าง run_collector.bat + Task Scheduler ..." -ForegroundColor Yellow
-
-$batContent = "@echo off`r`nchcp 65001 > nul`r`ntitle MT5 Quant Collector`r`necho ============================================`r`necho   MT5 Quant Collector`r`necho   Pi Securities -- S50IF + DOM`r`necho ============================================`r`necho.`r`ncd /d C:\quant-s`r`n:waitloop`r`necho [%time%] Checking MT5...`r`npython -c `"import MetaTrader5 as mt5; exit(0 if mt5.initialize() else 1)`" 2>nul`r`nif errorlevel 1 (`r`n    echo MT5 not ready -- retrying in 10s...`r`n    timeout /t 10 /nobreak > nul`r`n    goto waitloop`r`n)`r`necho.`r`necho [%time%] MT5 OK -- Starting Collector...`r`necho ============================================`r`necho.`r`npython collect_mt5_tick_dom.py`r`necho.`r`necho Collector stopped. Press any key to exit.`r`npause"
-[System.IO.File]::WriteAllText("C:\quant-s\run_collector.bat", $batContent, [System.Text.Encoding]::ASCII)
-Write-Host "  run_collector.bat OK" -ForegroundColor Green
-
-# MT5Collector — รันตอน boot
+# [5] Task Scheduler — รัน collector ตอน boot
+Write-Host "[5/5] ตั้ง Task Scheduler ..." -ForegroundColor Yellow
 schtasks /delete /tn MT5Collector /f 2>$null
-schtasks /create /tn MT5Collector /tr "python C:\quant-s\collect_mt5_tick_dom.py" /sc onstart /ru Administrator /rl HIGHEST /f | Out-Null
-schtasks /run /tn MT5Collector | Out-Null
-Write-Host "  MT5Collector task OK (background)" -ForegroundColor Green
-Write-Host "[5/5] Task Scheduler OK" -ForegroundColor Green
+$action = "cmd /c cd /d C:\quant-s && python collect_mt5_tick_dom.py >> C:\quant-s\collector.log 2>&1"
+schtasks /create /tn MT5Collector /tr $action /sc onstart /ru Administrator /rl HIGHEST /f | Out-Null
+Write-Host "      MT5Collector task OK (runs on boot)" -ForegroundColor Green
 
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "  Setup เสร็จ!" -ForegroundColor Green
 Write-Host ""
 Write-Host "  NEXT STEPS:" -ForegroundColor Yellow
-Write-Host "  1. ติดตั้ง MT5       : C:\quant\pisecurities5setup.exe" -ForegroundColor White
-Write-Host "  2. MT5 Login + OTP" -ForegroundColor White
-Write-Host "  3. Compile EA      : MetaEditor -> เปิด C:\quant-s\DOM_Collector.mq5 -> F7" -ForegroundColor White
-Write-Host "     Attach EA       : ลาก DOM_Collector จาก Navigator -> chart S50IF" -ForegroundColor Gray
-Write-Host "  4. *** Double-click : C:\quant-s\run_collector.bat ***" -ForegroundColor Cyan
-Write-Host "     (CMD จะเปิดขึ้นมา + แสดง log real-time ตลอดวัน)" -ForegroundColor Gray
+Write-Host "  1. ติดตั้ง MT5  : $DIR\pisecurities5setup.exe" -ForegroundColor White
+Write-Host "  2. Login MT5 + OTP" -ForegroundColor White
+Write-Host "  3. Copy EA ไปที่ : MT5 -> File -> Open Data Folder -> MQL5\Experts" -ForegroundColor White
+Write-Host "     (EA files อยู่ที่ $DIR\*.mq5)" -ForegroundColor Gray
+Write-Host "  4. Compile EA   : MetaEditor -> เปิดทีละตัว -> F7 (8 ตัว)" -ForegroundColor White
+Write-Host "  5. ลาก EA ลงกราฟ: DOM x6 + Tick x2 (1 EA = 1 chart)" -ForegroundColor White
+Write-Host "  6. Run collector: double-click $DIR\run_collector.bat" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "  ดึงข้อมูลกลับ Mac หลังตลาดปิด (รันบน Mac Terminal):" -ForegroundColor Yellow
-Write-Host "  scp -r Administrator@<VPS_IP>:`"C:/quant-s/data/`" ~/Developer/Quant-S/data/vps/" -ForegroundColor White
+Write-Host "  ดึงข้อมูลกลับ Mac (รันบน Mac Terminal):" -ForegroundColor Yellow
+Write-Host "  scp -r Administrator@<VPS_IP>:C:/quant-s/data/ ~/Developer/Quant-S/data/vps/" -ForegroundColor White
 Write-Host "============================================" -ForegroundColor Cyan
