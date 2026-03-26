@@ -9,7 +9,7 @@
 #property description "DOM Collector — S50IF_CON & S50 Futures | flush 10ms | no tick"
 
 //── Config ─────────────────────────────────────────────────────────
-#define OUT_FILE        "dom_s50if.csv"
+#define OUT_FILE        "dom\\dom_s50if.csv"
 #define FLUSH_MS        10
 #define HEARTBEAT_SEC   30
 #define RESYNC_SEC      1800

@@ -8,7 +8,7 @@
 #property strict
 #property description "DOM Collector #2 — DELTA only | flush 10ms | no dedup"
 
-#define OUT_FILE        "dom_delta.csv"
+#define OUT_FILE        "dom\\dom_delta.csv"
 #define FLUSH_MS        10
 #define HEARTBEAT_SEC   30
 #define RESYNC_SEC      1800

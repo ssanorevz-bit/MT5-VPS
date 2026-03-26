@@ -10,7 +10,7 @@
 #property description "Tick Collector — TFEX (S50IF_CON + Futures + Options) | poll 10ms"
 
 //── Config ─────────────────────────────────────────────────────────
-#define TICK_FILE       "tick_tfex.csv"
+#define TICK_FILE       "tick\\tick_tfex.csv"
 #define POLL_MS         10     // poll ticks ทุก 10ms
 #define HEARTBEAT_SEC   30
 #define RESYNC_SEC      300    // re-discover ทุก 5 นาที

@@ -8,7 +8,7 @@
 #property strict
 #property description "DOM Collector #3 — HIGH stocks 21 symbols | flush 50ms"
 
-#define OUT_FILE        "dom_high.csv"
+#define OUT_FILE        "dom\\dom_high.csv"
 #define FLUSH_MS        50
 #define HEARTBEAT_SEC   30
 #define RESYNC_SEC      1800

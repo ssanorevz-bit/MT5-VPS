@@ -9,7 +9,7 @@
 #property description "Tick Collector — All stocks (HIGH + DELTA + SET50 + Rest) | poll 100ms"
 
 //── Config ─────────────────────────────────────────────────────────
-#define TICK_FILE       "tick_stocks.csv"
+#define TICK_FILE       "tick\\tick_stocks.csv"
 #define POLL_MS         100    // poll ทุก 100ms — tick งานเบา ใช้ EA เดียวได้
 #define HEARTBEAT_SEC   30
 

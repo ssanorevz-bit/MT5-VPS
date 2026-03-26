@@ -8,7 +8,7 @@
 #property strict
 #property description "DOM Collector #4 — S50 Options auto-discover | flush 100ms"
 
-#define OUT_FILE        "dom_options.csv"
+#define OUT_FILE        "dom\\dom_options.csv"
 #define FLUSH_MS        100
 #define HEARTBEAT_SEC   30
 #define RESYNC_SEC      1800
