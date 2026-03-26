@@ -105,8 +105,7 @@ void OnBookEvent(const string &symbol)
       if(t == "") continue;
       FileWrite(g_fh, ts, symbol, t,
                 DoubleToString(book[i].price, 2),
-                IntegerToString((long)book[i].volume),
-                DoubleToString(book[i].volume_dbl, 2));
+                IntegerToString((long)book[i].volume));
      }
    ulong now = GetMicrosecondCount();
    if(now - g_last_flush >= (ulong)FLUSH_MS * 1000)
@@ -144,7 +143,7 @@ bool OpenFile()
       g_fh = FileOpen(OUT_FILE, FILE_WRITE|FILE_CSV|FILE_SHARE_READ|FILE_ANSI, ',');
       if(g_fh == INVALID_HANDLE)
         { Print("[STOCKS_B] ERROR opening file: ", GetLastError()); return false; }
-      FileWrite(g_fh, "timestamp_us","symbol","type","price","volume","volume_dbl");
+      FileWrite(g_fh, "timestamp_us","symbol","type","price","volume");
       FileFlush(g_fh); return true;
      }
    FileSeek(g_fh, 0, SEEK_END); return true;

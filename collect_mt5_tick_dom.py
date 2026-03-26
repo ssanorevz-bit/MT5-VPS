@@ -14,7 +14,7 @@ DOM สำหรับ Futures/Options:
 
   วิธีหา path ของ dom_live.csv:
     MT5 → Tools → Options → Expert Advisors → "Open" ข้างๆ Data folder
-    หรือ: %APPDATA%\MetaQuotes\Terminal\<ID>\MQL5\Files\dom_live.csv
+    หรือ: %APPDATA%\\MetaQuotes\\Terminal\\<ID>\\MQL5\\Files\\dom_live.csv
 
 รัน: python collect_mt5_tick_dom.py
 
@@ -28,7 +28,7 @@ Output (Parquet รายวัน):
 import io
 import time
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, Future
 import threading
@@ -60,15 +60,32 @@ _MT5_FILES = next(
     .glob("*/MQL5/Files"),
     Path(".")   # fallback
 )
+# ⚠️ EA เขียนไปใน subfolder "dom\" เสมอ (ดู #define OUT_FILE ใน EA แต่ละตัว)
+# DOM_S50IF  : dom\dom_s50if.csv
+# DOM_Delta  : dom\dom_delta.csv
+# DOM_High   : dom\dom_high.csv
+# DOM_Options: dom\dom_options.csv
+# DOM_Stocks : dom\dom_stocks.csv
+_MT5_DOM_DIR = _MT5_FILES / "dom"
 DOM_CSV_PATHS = {
-    "s50if":   _MT5_FILES / "dom_s50if.csv",
-    "delta":   _MT5_FILES / "dom_delta.csv",
-    "high":    _MT5_FILES / "dom_high.csv",
-    "options": _MT5_FILES / "dom_options.csv",
-    "stocks":  _MT5_FILES / "dom_stocks.csv",
+    "s50if":    _MT5_DOM_DIR / "dom_s50if.csv",      # DOM_S50IF.mq5
+    "delta":    _MT5_DOM_DIR / "dom_delta.csv",      # DOM_Delta.mq5
+    "high":     _MT5_DOM_DIR / "dom_high.csv",       # DOM_High.mq5
+    "options":  _MT5_DOM_DIR / "dom_options.csv",    # DOM_Options.mq5
+    "stocks_a": _MT5_DOM_DIR / "dom_stocks_a.csv",   # DOM_Stocks_A.mq5
+    "stocks_b": _MT5_DOM_DIR / "dom_stocks_b.csv",   # DOM_Stocks_B.mq5
 }
-# Legacy fallback — ถ้ายังใช้ v2/v3 อยู่
+# Legacy fallback — ถ้ายังใช้ v2/v3 (DOM_Collector.mq5) อยู่ → เขียน flat ที่ root Files/
 DOM_CSV_PATH = _MT5_FILES / "dom_live.csv"
+
+# ── Tick via EA CSV (Tick_Stocks.mq5 + Tick_TFEX.mq5) ───────────────────
+# Tick_Stocks เขียน tick หุ้นทุกตัว (~157 ตัว) poll 100ms
+# Tick_TFEX   เขียน tick S50IF + Futures poll 10ms (backup — Python ยังดึง API ด้วย)
+_MT5_TICK_DIR = _MT5_FILES / "tick"
+TICK_CSV_PATHS = {
+    "stocks": _MT5_TICK_DIR / "tick_stocks.csv",   # Tick_Stocks.mq5
+    "tfex":   _MT5_TICK_DIR / "tick_tfex.csv",     # Tick_TFEX.mq5 (backup)
+}
 
 # Windows reserved device names — ห้ามใช้เป็นชื่อโฟลเดอร์/ไฟล์
 WINDOWS_RESERVED = {
@@ -183,9 +200,9 @@ def init_mt5(max_wait_min: int = 30):
     """Retry MT5 initialize จนกว่าจะ login เสร็จ (รอสูงสุด max_wait_min นาที)
     ทำให้ script เริ่มรันได้ทันทีหลัง boot โดยไม่ต้องรอ OTP ก่อน
     """
-    deadline = datetime.utcnow() + timedelta(minutes=max_wait_min)
+    deadline = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=max_wait_min)
     attempt = 0
-    while datetime.utcnow() < deadline:
+    while datetime.now(timezone.utc).replace(tzinfo=None) < deadline:
         if mt5.initialize():
             info = mt5.terminal_info()
             log.info(f"MT5 connected: {info.name} build={info.build}")
@@ -258,14 +275,13 @@ def snapshot_dom(sym: str) -> pd.DataFrame:
     book = mt5.market_book_get(sym)
     if book is None:
         return pd.DataFrame()
-    ts   = datetime.utcnow()
+    ts   = datetime.now(timezone.utc).replace(tzinfo=None)
     rows = [{
         "timestamp":  ts,
         "symbol":     sym,
         "type":       "bid" if item.type == mt5.BOOK_TYPE_BUY else "ask",
         "price":      item.price,
         "volume":     item.volume,
-        "volume_dbl": item.volume_dbl,
     } for item in book]
     return pd.DataFrame(rows)
 
@@ -284,13 +300,13 @@ class _CSVDOMReader:
     (อ่านเฉพาะ bytes ใหม่นับจาก seek position ล่าสุด → ไม่ re-read ทั้งไฟล์)
 
     CSV format (จาก EA):
-        timestamp_ms,symbol,type,price,volume,volume_dbl
-        2026-03-25 11:24:20.450,S50IF_CON,bid,874.5,120,120.00
-        ...
+    CSV format (จาก EA):
+        timestamp_us,symbol,type,price,volume
+        2026-03-26 11:24:20.450123,S50IF_CON,bid,874.5,120
     """
 
-    # v4 schema: timestamp_us, symbol, type, price, volume, volume_dbl
-    _COLS = ["timestamp_us", "symbol", "type", "price", "volume", "volume_dbl"]
+    # v5 schema: timestamp_us, symbol, type, price, volume (ลบ volume_dbl — ไม่มีใน MT5 build เก่า)
+    _COLS = ["timestamp_us", "symbol", "type", "price", "volume"]
 
     def __init__(self, csv_path: Path, label: str = ""):
         self._path: Path                        = csv_path
@@ -346,8 +362,7 @@ class _CSVDOMReader:
                 names=self._COLS,
                 header=None,
                 dtype={"symbol": str, "type": str,
-                       "price": float, "volume": float,
-                       "volume_dbl": float},
+                       "price": float, "volume": float},
                 on_bad_lines="skip",
             )
         except Exception as e:
@@ -378,6 +393,90 @@ class _CSVDOMReader:
                 self._fh.close()
             except OSError:
                 pass
+
+
+# ── EA CSV Tick Reader (Tick_Stocks / Tick_TFEX) ───────────────────────
+class _CSVTickReader:
+    """อ่าน tick_stocks.csv / tick_tfex.csv ที่ Tick_*.mq5 เขียน แบบ tail-follow
+
+    CSV format (จาก EA):
+        timestamp_ms,symbol,last,volume,volume_real,side,bid,ask
+        2026-03-26 10:00:01.123000,DELTA,860.00,100,100.0000,buy,859.00,861.00
+    """
+    _COLS = ["timestamp_ms", "symbol", "last", "volume", "volume_real", "side", "bid", "ask"]
+
+    def __init__(self, csv_path: Path, label: str = ""):
+        self._path  = csv_path
+        self._label = label or csv_path.stem
+        self._fh    = None
+        self._pos   = 0
+        self._ok    = False
+        self._open()
+
+    def _open(self):
+        if not self._path.exists():
+            log.warning(f"[CSVTickReader:{self._label}] ไม่พบไฟล์: {self._path}")
+            return
+        try:
+            self._fh  = open(self._path, "r", encoding="utf-8", errors="replace")
+            self._fh.seek(0, 2)
+            self._pos = self._fh.tell()
+            self._ok  = True
+            log.info(f"[CSVTickReader:{self._label}] เชื่อมต่อ {self._path}")
+        except OSError as e:
+            log.warning(f"[CSVTickReader:{self._label}] เปิดไฟล์ไม่ได้: {e}")
+
+    def read_new(self) -> dict:
+        """อ่าน rows ใหม่ → dict {symbol → DataFrame}"""
+        if not self._ok:
+            self._open()
+            if not self._ok:
+                return {}
+        try:
+            size = self._path.stat().st_size
+        except OSError:
+            return {}
+        if size < self._pos:
+            self._fh.seek(0); self._fh.readline(); self._pos = self._fh.tell()
+        self._fh.seek(self._pos)
+        chunk = self._fh.read()
+        self._pos = self._fh.tell()
+        if not chunk.strip():
+            return {}
+        try:
+            import io as _io
+            df = pd.read_csv(
+                _io.StringIO(chunk),
+                names=self._COLS,
+                header=None,
+                dtype={"symbol": str, "side": str,
+                       "last": float, "volume": float,
+                       "volume_real": float, "bid": float, "ask": float},
+                on_bad_lines="skip",
+            )
+        except Exception as e:
+            log.debug(f"[CSVTickReader:{self._label}] parse error: {e}")
+            return {}
+        if df.empty:
+            return {}
+        # กรอง HEARTBEAT
+        df = df[df["last"] != "HEARTBEAT"]
+        df = df[pd.to_numeric(df["last"], errors="coerce").notna()]
+        if df.empty:
+            return {}
+        # แปลง timestamp
+        df["timestamp_ms"] = pd.to_datetime(
+            df["timestamp_ms"], format="%Y-%m-%d %H:%M:%S.%f", errors="coerce"
+        )
+        df.dropna(subset=["timestamp_ms"], inplace=True)
+        df.rename(columns={"timestamp_ms": "timestamp"}, inplace=True)
+        return {sym: grp.reset_index(drop=True)
+                for sym, grp in df.groupby("symbol", sort=False)}
+
+    def close(self):
+        if self._fh:
+            try: self._fh.close()
+            except OSError: pass
 
 
 def _poll_stock_dom(args: tuple):
@@ -416,7 +515,7 @@ def today_str() -> str:
 # ── Market session ─────────────────────────────────────────────────
 def _bkk_hhmm() -> tuple[bool, int]:
     """(is_weekday, hhmm) in BKK time"""
-    now = datetime.utcnow() + timedelta(hours=7)
+    now = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=7)
     return now.weekday() < 5, now.hour * 100 + now.minute
 
 
@@ -471,7 +570,7 @@ def main():
     prio_syms   = [s for s in fo_syms if s in PRIORITY_FUTURES]   # S50IF_CON
     other_fo    = [s for s in fo_syms if s not in PRIORITY_FUTURES]  # options
 
-    # ── CSV DOM Readers — v4: 5 EA แยกตาม symbol group ────────────
+    # ── CSV DOM Readers — v4: 7 EA แยกตาม symbol group ────────────
     csv_readers: dict[str, _CSVDOMReader] = {}
     for label, path in DOM_CSV_PATHS.items():
         csv_readers[label] = _CSVDOMReader(path, label=label)
@@ -479,6 +578,12 @@ def main():
     if DOM_CSV_PATH.exists():
         csv_readers["legacy"] = _CSVDOMReader(DOM_CSV_PATH, label="legacy")
     fo_sym_set  = set(fo_syms)   # ใช้ fast-lookup สำหรับ filter
+
+    # ── CSV Tick Readers — Tick_Stocks + Tick_TFEX ────────────────
+    tick_csv_readers: dict[str, _CSVTickReader] = {}
+    for label, path in TICK_CSV_PATHS.items():
+        tick_csv_readers[label] = _CSVTickReader(path, label=label)
+    stock_tick_buffers: dict[str, list] = {}   # {symbol → [DataFrame, ...]}
 
     # ── แบ่ง stock เป็น 2 กลุ่มตาม capture strategy ──────────────
     # HIGH: event-driven (hash) เหมือน S50IF — ไม่พลาดแม้แต่ event เดียว
@@ -488,11 +593,12 @@ def main():
 
     subscribe_dom(stock_syms)  # FO ไม่ต้อง subscribe แล้ว — ใช้ CSV จาก EA
 
-    tick_buffers     = {s: [] for s in fo_syms}       # futures + options only
+    tick_buffers     = {s: [] for s in fo_syms}       # futures + options only (API)
     dom_buffers      = {s: [] for s in all_syms}      # ทุก symbol
-    last_tick_ts     = {s: datetime.utcnow() - timedelta(minutes=1) for s in fo_syms}
-    last_flush           = datetime.utcnow()
-    last_sym_refresh     = datetime.utcnow()
+    # stock_tick_buffers defined above (dynamic — ไม่รู้ล่วงหน้าว่า symbol ไหนมี tick)
+    last_tick_ts     = {s: datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=1) for s in fo_syms}
+    last_flush           = datetime.now(timezone.utc).replace(tzinfo=None)
+    last_sym_refresh     = datetime.now(timezone.utc).replace(tzinfo=None)
     prev_dom_hash: dict  = {}                         # HIGH stocks: hash สำหรับ event-driven
     last_dom_snap_stocks_ts: dict = {}                # MED/LOW stocks: timestamp ของ snap ล่าสุด
     last_stock_sweep     = datetime.min               # เวลา ThreadPool sweep ล่าสุด
@@ -502,7 +608,8 @@ def main():
 
     log.info("Collector started. Ctrl+C to stop.")
     log.info(
-        f"[EA CSV v4]     {len(csv_readers)} readers: {list(csv_readers.keys())}\n"
+        f"[EA DOM CSV]    {len(csv_readers)} readers: {list(csv_readers.keys())}\n"
+        f"[EA TICK CSV]   {len(tick_csv_readers)} readers: {list(tick_csv_readers.keys())}\n"
         f"[EVENT-DRIVEN]  HIGH stocks: {len(high_stock_syms)} syms\n"
         f"[TIME-BASED]    MED: {len([s for s in time_stock_syms if s in MED_DOM_STOCKS])} @ 500ms | "
         f"LOW: {len([s for s in time_stock_syms if s not in MED_DOM_STOCKS])} @ 1s"
@@ -510,7 +617,7 @@ def main():
 
     try:
         while True:
-            now      = datetime.utcnow()
+            now      = datetime.now(timezone.utc).replace(tzinfo=None)
             date_str = today_str()
 
             # ── MT5 reconnect guard ──────────────────────────────
@@ -563,9 +670,10 @@ def main():
                         tick_buffers[sym].append(df)
                         last_tick_ts[sym] = df["time_msc"].max().to_pydatetime()
 
-            # ── DOM: อ่านจาก EA CSV ทุก reader (v4: 5 EA) ────────────
+            # ── DOM: อ่านจาก EA CSV ทุก reader (v4: 7 EA) ────────────
             # แต่ละ EA เขียน CSV แยกกัน: dom_s50if, dom_delta, dom_high,
-            # dom_options, dom_stocks  → Python อ่าน bytes ใหม่จากทุกไฟล์
+            # dom_options, dom_stocks, dom_stocks_a, dom_stocks_b
+            # → Python อ่าน bytes ใหม่จากทุกไฟล์
             for _reader_label, _reader in csv_readers.items():
                 new_dom = _reader.read_new()   # {symbol → DataFrame}
                 for sym, df in new_dom.items():
@@ -573,6 +681,18 @@ def main():
                         if sym not in dom_buffers:
                             dom_buffers[sym] = []
                         dom_buffers[sym].append(df)
+
+            # ── Tick Stock: อ่านจาก Tick_Stocks.mq5 CSV ──────────────
+            # Tick_Stocks เขียน tick หุ้น ~157 ตัว ลง tick\tick_stocks.csv
+            # Python อ่าน bytes ใหม่ทุก 10ms loop แล้วแยก buffer ตาม symbol
+            if is_stock_active():
+                for _reader_label, _tick_reader in tick_csv_readers.items():
+                    new_ticks = _tick_reader.read_new()   # {symbol → DataFrame}
+                    for sym, df in new_ticks.items():
+                        if not df.empty:
+                            if sym not in stock_tick_buffers:
+                                stock_tick_buffers[sym] = []
+                            stock_tick_buffers[sym].append(df)
 
             # ── DOM: HIGH stocks — event-driven เหมือน FO (stock session)
             # DELTA, KBANK, AOT ฯลฯ มี DOM เปลี่ยนเร็ว → ใช้ hash เหมือนกัน
@@ -588,7 +708,7 @@ def main():
             # ── DOM: MED+LOW stocks — time-based ThreadPool (50ms sweep)
             # หุ้นที่ DOM เปลี่ยนช้ากว่า → ไม่จำเป็นต้อง event-driven
             if is_stock_active() and (now - last_stock_sweep).total_seconds() >= 0.05:
-                snap_now = datetime.utcnow()
+                snap_now = datetime.now(timezone.utc).replace(tzinfo=None)
                 args_list = [
                     (sym, snap_now,
                      last_dom_snap_stocks_ts.get(sym, datetime.min),
@@ -640,6 +760,7 @@ def main():
                 # → main loop ไม่ต้องรอ disk write
                 tick_snap: dict[str, pd.DataFrame] = {}
                 dom_snap:  dict[str, pd.DataFrame] = {}
+                stock_tick_snap: dict[str, pd.DataFrame] = {}
 
                 for sym in fo_syms:
                     if tick_buffers[sym]:
@@ -657,6 +778,15 @@ def main():
                             log.warning(f"  DOM {sym}: MemoryError — buffer dropped")
                         dom_buffers[sym] = []
 
+                # Stock Tick (จาก Tick_Stocks.mq5 CSV)
+                for sym, bufs in list(stock_tick_buffers.items()):
+                    if bufs:
+                        try:
+                            stock_tick_snap[sym] = pd.concat(bufs, ignore_index=True)
+                        except MemoryError:
+                            log.warning(f"  TickStock {sym}: MemoryError — buffer dropped")
+                        stock_tick_buffers[sym] = []
+
                 # submit flush ไป background
                 if tick_snap:
                     _pending_flush.append(
@@ -665,6 +795,10 @@ def main():
                 if dom_snap:
                     _pending_flush.append(
                         _flush_executor.submit(_flush_worker, dom_snap, OUT_DIR, date_str, "dom")
+                    )
+                if stock_tick_snap:
+                    _pending_flush.append(
+                        _flush_executor.submit(_flush_worker, stock_tick_snap, OUT_DIR, date_str, "ticks")
                     )
 
                 last_flush = now
@@ -675,6 +809,8 @@ def main():
         log.info("Stopping...")
     finally:
         for _r in csv_readers.values():
+            _r.close()
+        for _r in tick_csv_readers.values():
             _r.close()
         stock_executor.shutdown(wait=False)
         # รอ background flush เสร็จก่อน shutdown
