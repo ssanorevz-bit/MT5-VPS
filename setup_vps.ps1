@@ -1,9 +1,15 @@
 # =============================================================
-# setup_vps.ps1 — VPS Auto Setup
+# setup_vps.ps1 — VPS Auto Setup  v2
 # =============================================================
 # วิธีใช้ (PowerShell Administrator):
 #   irm https://raw.githubusercontent.com/ssanorevz-bit/astfex/main/setup_vps.ps1 | iex
+# Fix: ใช้ Invoke-WebRequest แทน curl alias (PowerShell compat)
 # =============================================================
+
+# Helper function แทน curl
+function Download-File($url, $dest) {
+    Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+}
 
 $REPO = "https://raw.githubusercontent.com/ssanorevz-bit/astfex/main"
 $DIR  = "C:\quant-s"
@@ -44,11 +50,11 @@ Write-Host "[3/5] ติดตั้ง packages + ดาวน์โหลด s
 python -m pip install MetaTrader5 pandas pyarrow -q
 
 # Download Python collector
-curl -s -o "$DIR\collect_mt5_tick_dom.py" "$REPO/collect_mt5_tick_dom.py"
+Download-File "$REPO/collect_mt5_tick_dom.py" "$DIR\collect_mt5_tick_dom.py"
 Write-Host "      collect_mt5_tick_dom.py OK" -ForegroundColor Green
 
 # Download run_collector.bat
-curl -s -o "$DIR\run_collector.bat" "$REPO/run_collector.bat"
+Download-File "$REPO/run_collector.bat" "$DIR\run_collector.bat"
 Write-Host "      run_collector.bat OK" -ForegroundColor Green
 
 # Download EA ทุกตัว (DOM x6 + Tick x2)
@@ -63,8 +69,9 @@ $EAs = @(
     "Tick_Stocks.mq5"
 )
 foreach ($ea in $EAs) {
-    curl -s -o "$DIR\$ea" "$REPO/$ea"
-    Write-Host "      $ea OK" -ForegroundColor Green
+    Download-File "$REPO/$ea" "$DIR\$ea"
+    $size = (Get-Item "$DIR\$ea").Length
+    Write-Host "      $ea OK ($size bytes)" -ForegroundColor Green
 }
 Write-Host "[3/5] packages + scripts OK" -ForegroundColor Green
 
