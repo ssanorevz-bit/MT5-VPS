@@ -513,10 +513,10 @@ def today_str() -> str:
 
 
 # ── Market session ─────────────────────────────────────────────────
-def _bkk_hhmm() -> tuple[bool, int]:
-    """(is_weekday, hhmm) in BKK time"""
+def _bkk_hhmm() -> tuple[bool, int, int]:
+    """(is_weekday, hhmm, second) in BKK time"""
     now = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=7)
-    return now.weekday() < 5, now.hour * 100 + now.minute
+    return now.weekday() < 5, now.hour * 100 + now.minute, now.second
 
 
 def is_fo_open() -> bool:
@@ -524,7 +524,7 @@ def is_fo_open() -> bool:
       Morning:   09:45 - 12:30
       Afternoon: 13:45 - 16:55
     """
-    weekday, hhmm = _bkk_hhmm()
+    weekday, hhmm, _ = _bkk_hhmm()
     if not weekday:
         return False
     return (945 <= hhmm <= 1230) or (1345 <= hhmm <= 1655)
@@ -536,7 +536,7 @@ def is_stock_active() -> bool:
       Morning:   from 09:45 (monitor) → collect on first DOM → until 12:30
       Afternoon: from 13:45 (monitor) → collect on first DOM → until 16:30
     """
-    weekday, hhmm = _bkk_hhmm()
+    weekday, hhmm, _ = _bkk_hhmm()
     if not weekday:
         return False
     return (945 <= hhmm <= 1230) or (1345 <= hhmm <= 1630)
@@ -634,15 +634,19 @@ def main():
                     continue
 
             if not is_fo_open() and not is_stock_active():
-                # Smart sleep: เช็คทุก 1s หลัง 09:44 และ 13:44 เพื่อไม่พลาด tick แรก
-                _, hhmm_now = _bkk_hhmm()
-                near_open = (hhmm_now == 944) or (hhmm_now == 1344)
-                sleep_sec = 1 if near_open else 60
-                if near_open:
-                    log.debug(f"Near open ({hhmm_now}) — polling 1s")
+                # Smart sleep:
+                # 09:44:50-09:44:59 และ 13:44:50-13:44:59 → poll 0.1s (แม่นยำสูงสุด)
+                # 09:44:00-09:44:49 และ 13:44:00-13:44:49 → poll 1s
+                # เวลาอื่น → sleep 60s
+                _, hhmm_now, sec_now = _bkk_hhmm()
+                if (hhmm_now == 944) or (hhmm_now == 1344):
+                    if sec_now >= 50:
+                        time.sleep(0.1)   # 09:44:50+ → 0.1s precision
+                    else:
+                        time.sleep(1)     # 09:44:00-49 → 1s
                 else:
-                    log.info(f"All sessions closed — sleeping {sleep_sec}s")
-                time.sleep(sleep_sec)
+                    log.info("All sessions closed — sleeping 60s")
+                    time.sleep(60)
                 continue
 
             # ── Re-discover options/stocks ──────────────────────
