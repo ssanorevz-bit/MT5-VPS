@@ -276,11 +276,12 @@ def collect_ticks(sym: str, from_dt: datetime) -> pd.DataFrame:
 
 def snapshot_dom(sym: str) -> pd.DataFrame:
     """Snapshot order book via Python API — ใช้สำหรับ STOCKS เท่านั้น (5 levels)
-    สำหรับ Futures/Options ใช้ _CSVDOMReader แทน (10 levels จาก EA)"""
+    สำหรับ Futures/Options ใช้ _CSVDOMReader แทน (10 levels จาก EA)
+    ใช้ Bangkok time (+7h) ให้ตรงกับ EA CSV timestamps"""
     book = mt5.market_book_get(sym)
     if book is None:
         return pd.DataFrame()
-    ts   = datetime.now(timezone.utc).replace(tzinfo=None)
+    ts   = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=7)  # Bangkok time
     rows = [{
         "timestamp":  ts,
         "symbol":     sym,
