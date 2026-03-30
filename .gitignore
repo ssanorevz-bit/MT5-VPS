@@ -2,7 +2,7 @@
 # TFEX cookies (sensitive)
 scripts/options_regime/.tfex_cookies.json
 
-# Option EOD data (large binary - managed by GitHub Actions)
-Option EOD/**/*.parquet
-!Option EOD/latest.parquet
+# Option EOD data — managed by GitHub Actions (committed automatically)
+# ไม่ gitignore เพราะ Actions ต้อง commit กลับ repo
+# scripts/options_regime/.tfex_cookies.json เท่านั้นที่ ignore
 
