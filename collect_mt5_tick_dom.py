@@ -52,6 +52,11 @@ SYMBOL_REFRESH_MIN   = 30    # re-discover options/stocks ทุก 30 นาท
 OUT_DIR              = Path("C:/quant-s/data")   # absolute path — safe for Task Scheduler
 LOG_FILE             = Path("C:/quant-s/collector.log")
 
+# ── EA Watchdog Config ──────────────────────────────────────────────
+# ถ้า EA ไม่เขียน CSV เกิน N วินาที → fallback ไปใช้ Python API
+EA_STALE_SEC         = 30    # วินาทีที่ถือว่า EA ตายแล้ว
+FALLBACK_LOG_INTERVAL = 60  # log warning ทุกกี่วินาทีตอน fallback mode
+
 # ── DOM via EA CSV (v4: 5 แยก EA) ────────────────────────────────────
 # Path ของ CSV ที่แต่ละ EA เขียน
 # หาได้จาก MT5 → File → Open Data Folder → MQL5\Files
@@ -606,6 +611,10 @@ def main():
     _pending_flush: list[Future] = []                 # track background flush futures
     _loop_times: list[float] = []                     # loop latency monitoring
 
+    # ── EA Watchdog state ──────────────────────────────────────
+    ea_last_dom_ts: dict  = {}   # {label → datetime} เวลาที่ EA เขียนล่าสุด
+    ea_fallback_warned: dict = {}  # {sym → datetime} สำหรับ rate-limit log
+
     log.info("Collector started. Ctrl+C to stop.")
     log.info(
         f"[EA DOM CSV]    {len(csv_readers)} readers: {list(csv_readers.keys())}\n"
@@ -692,6 +701,30 @@ def main():
                         if sym not in dom_buffers:
                             dom_buffers[sym] = []
                         dom_buffers[sym].append(df)
+                        ea_last_dom_ts[_reader_label] = now   # อัปเดต watchdog
+
+            # ── EA Watchdog: fallback Python API ถ้า EA ตาย ──────────
+            # ถ้า DOM_S50IF.mq5 ไม่เขียน CSV เกิน EA_STALE_SEC วินาที
+            # → fallback ไปใช้ mt5.market_book_get() (5 levels แทน 10)
+            # → ป้องกัน DOM ขาดทั้งหมด แต่คุณภาพลดลง
+            if is_fo_open():
+                for sym in prio_syms:   # S50IF_CON
+                    ea_ts  = ea_last_dom_ts.get("s50if", datetime.min)
+                    stale  = (now - ea_ts).total_seconds() > EA_STALE_SEC
+                    if stale:
+                        df_fb = snapshot_dom(sym)   # Python API — 5 levels
+                        if not df_fb.empty:
+                            if sym not in dom_buffers:
+                                dom_buffers[sym] = []
+                            dom_buffers[sym].append(df_fb)
+                        # rate-limited warning
+                        last_warn = ea_fallback_warned.get(sym, datetime.min)
+                        if (now - last_warn).total_seconds() >= FALLBACK_LOG_INTERVAL:
+                            log.warning(
+                                f"⚠️  EA DOM s50if ไม่เขียน {EA_STALE_SEC}s — "
+                                f"FALLBACK Python API (5 levels) สำหรับ {sym}"
+                            )
+                            ea_fallback_warned[sym] = now
 
             # ── Tick Stock: อ่านจาก Tick_Stocks.mq5 CSV ──────────────
             # Tick_Stocks เขียน tick หุ้น ~157 ตัว ลง tick\tick_stocks.csv

@@ -53,6 +53,10 @@ python -m pip install MetaTrader5 pandas pyarrow -q
 Download-File "$REPO/collect_mt5_tick_dom.py" "$DIR\collect_mt5_tick_dom.py"
 Write-Host "      collect_mt5_tick_dom.py OK" -ForegroundColor Green
 
+# Download watchdog
+Download-File "$REPO/watchdog_vps.ps1" "$DIR\watchdog_vps.ps1"
+Write-Host "      watchdog_vps.ps1 OK" -ForegroundColor Green
+
 # Download run_collector.bat
 Download-File "$REPO/run_collector.bat" "$DIR\run_collector.bat"
 Write-Host "      run_collector.bat OK" -ForegroundColor Green
@@ -81,12 +85,20 @@ Invoke-WebRequest -Uri "https://download.mql5.com/cdn/web/21687/mt5/pisecurities
     -OutFile "$DIR\pisecurities5setup.exe" -UseBasicParsing
 Write-Host "      MT5 installer -> $DIR\pisecurities5setup.exe" -ForegroundColor Green
 
-# [5] Task Scheduler — รัน collector ตอน boot
+# [5] Task Scheduler — collector + watchdog
 Write-Host "[5/5] ตั้ง Task Scheduler ..." -ForegroundColor Yellow
+
+# 5a. Collector: รันทุกครั้งที่ boot
 schtasks /delete /tn MT5Collector /f 2>$null
 $action = "cmd /c cd /d C:\quant-s && python collect_mt5_tick_dom.py >> C:\quant-s\collector.log 2>&1"
 schtasks /create /tn MT5Collector /tr $action /sc onstart /ru Administrator /rl HIGHEST /f | Out-Null
 Write-Host "      MT5Collector task OK (runs on boot)" -ForegroundColor Green
+
+# 5b. Watchdog: รันทุก 5 นาที (ตรวจ MT5 + Collector ยังอยู่ไหม → restart ถ้าตาย)
+schtasks /delete /tn MT5Watchdog /f 2>$null
+$wdAction = "powershell -ExecutionPolicy Bypass -File C:\quant-s\watchdog_vps.ps1"
+schtasks /create /tn MT5Watchdog /tr $wdAction /sc minute /mo 5 /ru Administrator /rl HIGHEST /f | Out-Null
+Write-Host "      MT5Watchdog task OK (runs every 5 min)" -ForegroundColor Green
 
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan
@@ -100,6 +112,8 @@ Write-Host "     (EA files อยู่ที่ $DIR\*.mq5)" -ForegroundColor G
 Write-Host "  4. Compile EA   : MetaEditor -> เปิดทีละตัว -> F7 (8 ตัว)" -ForegroundColor White
 Write-Host "  5. ลาก EA ลงกราฟ: DOM x6 + Tick x2 (1 EA = 1 chart)" -ForegroundColor White
 Write-Host "  6. Run collector: double-click $DIR\run_collector.bat" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  ✅ Watchdog จะ restart MT5+Collector อัตโนมัติทุก 5 นาที" -ForegroundColor Green
 Write-Host ""
 Write-Host "  ดึงข้อมูลกลับ Mac (รันบน Mac Terminal):" -ForegroundColor Yellow
 Write-Host "  scp -r Administrator@<VPS_IP>:C:/quant-s/data/ ~/Developer/Quant-S/data/vps/" -ForegroundColor White
